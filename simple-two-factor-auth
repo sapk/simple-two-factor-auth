@@ -1,0 +1,111 @@
+#!/bin/bash
+
+#Inspired from https://github.com/authy/authy-ssh
+#Usage : simple-two-factor-auth login|test
+
+#Remarque : the mail command should work in the userspace for the user that log in and the aliases to match user->email must also be set.
+
+
+MAIL=mail
+
+TOKEN_LENGHT=7
+TOKEN_MASK="_A-Z-a-z-0-9"
+TOKEN=$(< /dev/urandom tr -dc "$TOKEN_MASK" | head -c$TOKEN_LENGHT)
+
+READ_TIMEOUT=60
+
+USER=$(whoami)
+
+OK=0
+FAIL=1
+
+function debug() {
+    if [[ $DEBUG ]]
+    then
+        echo ">>> $*"
+    fi
+}
+
+
+function check_dependencies() {
+  if ! type "mail" > /dev/null 2>&1;
+  then
+    echo "You need installed on your system 'mail' command"
+    exit $FAIL
+  fi
+}
+function escape_input() {
+  sed "s/[;\`\"\$\' ]//g" <<<$*
+}
+function read_input() {
+  read -t "$READ_TIMEOUT" input
+  echo "$(escape_input $input)"
+}
+function run_shell() {
+    if [[ "$SSH_ORIGINAL_COMMAND" != "" ]] # when user runs: ssh server <command>
+    then
+        debug "running command: $SSH_ORIGINAL_COMMAND"
+        exec /bin/bash -c "${SSH_ORIGINAL_COMMAND}"
+    elif [ $SHELL ] # when user runs: ssh server
+    then
+        debug "running shell: $SHELL"
+        exec -l $SHELL
+    fi
+
+    exit $?
+}
+function generate_token() {
+	TOKEN=$(< /dev/urandom tr -dc "$TOKEN_MASK" | head -c$TOKEN_LENGHT)
+}
+function send_mail_with_token() {
+  echo "Token : $TOKEN" | $MAIL -s "Two-factor auth" $USER
+}
+function check_mail() {
+  send_mail_with_token
+  echo "You should receive a mail with the token : $TOKEN to the mail affiliated to $USER"
+}
+function check_token() {
+for i in {1..3}
+do
+  echo -n "Token (type 'resend' to request a new token) $i/3: "
+  asked_token="$(read_input)"
+
+  if [ $? -ne 0 ]
+    then
+      debug "Timeout on Token read."
+      exit $?
+  fi
+
+  case $asked_token in
+            resend) generate_token; send_mail_with_token ;;
+            *)
+	      if [ "$TOKEN" == "$asked_token" ]
+		then
+        	debug "Two-factor token was accepted."
+		run_shell
+	      else
+        	echo "Invalid token. try again"
+	      fi
+	    ;;
+  esac
+done
+    return $FAIL
+}
+function echo_usage() {
+	echo "#TODO"
+}
+
+case $1 in
+    test|check)
+        check_dependencies
+        check_mail
+        ;;
+    login)
+        check_dependencies
+        send_mail_with_token
+	check_token
+        ;;
+    *)
+	echo_usage  
+	;;
+esac
